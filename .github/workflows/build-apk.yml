@@ -1,0 +1,74 @@
+name: Build Android APK
+
+on:
+  # 网页上手动点按钮触发（推荐：省额度，想编才编）
+  workflow_dispatch:
+  # push 到 main 自动构建。不需要就删掉下面这两行
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. 把仓库代码拉到这台全新虚拟机上
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2. Node 20 + 缓存 npm 依赖
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # 3. JDK 17（Expo SDK 57 / RN 0.86 要求）
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      # 4. Android SDK（runner 镜像自带，这步确保 ANDROID_HOME 正确）
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      # 5. 缓存 Gradle —— 省时间的关键，第二次起能省一半以上
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      # 6. 严格按 package-lock.json 装依赖
+      - name: Install dependencies
+        run: npm ci
+
+      # 7. 生成 android/ 原生工程
+      #    仓库里没有 android/ 目录（.gitignore 里 /android 被忽略了）
+      #    这台机器编完就销毁，所以每次都要从 app.json 现场生成
+      - name: Prebuild Android project
+        run: npx expo prebuild --platform android --clean --no-install
+        env:
+          EXPO_NO_TELEMETRY: 1
+
+      # 8. 编译 release APK
+      #    CI 里进程跑完就销毁，--no-daemon 不浪费内存
+      - name: Build release APK
+        run: cd android && ./gradlew assembleRelease --no-daemon
+        env:
+          GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx4g
+
+      # 9. 上传产物，30 天内可下载
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: octopmobile-apk
+          path: android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 30
